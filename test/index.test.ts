@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "path";
 import { promises as fs, existsSync } from "fs";
-import { CommandHooksPlugin } from "../src/index.js";
+import { CommandHooksPlugin, parseArguments, resolveCommandAndArgs } from "../src/index.js";
 
 const tempDir = join(process.cwd(), "temp-test-dir");
 
@@ -72,6 +72,62 @@ describe("Command Hooks Plugin", () => {
     expect(logContent).toContain("Plugin initialized - Tracking commands");
   });
 
+  describe("Utility: parseArguments", () => {
+    it("should split normal arguments", () => {
+      expect(parseArguments("foo bar baz")).toEqual(["foo", "bar", "baz"]);
+    });
+
+    it("should respect double quotes", () => {
+      expect(parseArguments('foo "bar baz"')).toEqual(["foo", "bar baz"]);
+    });
+
+    it("should respect single quotes", () => {
+      expect(parseArguments("foo 'bar baz'")).toEqual(["foo", "bar baz"]);
+    });
+
+    it("should handle escaped quotes", () => {
+      expect(parseArguments('foo \\"bar')).toEqual(["foo", '"bar']);
+    });
+
+    it("should handle empty arguments in quotes", () => {
+      expect(parseArguments('foo "" bar')).toEqual(["foo", "", "bar"]);
+    });
+  });
+
+  describe("Utility: resolveCommandAndArgs", () => {
+    it("should map positional placeholders", () => {
+      const resolved = resolveCommandAndArgs("/pre-cmd $2 $1", "foo bar");
+      expect(resolved).toEqual({
+        command: "/pre-cmd",
+        arguments: "bar foo"
+      });
+    });
+
+    it("should substitute $args with full string", () => {
+      const resolved = resolveCommandAndArgs("/pre-cmd $args", "foo bar");
+      expect(resolved).toEqual({
+        command: "/pre-cmd",
+        arguments: "foo bar"
+      });
+    });
+
+    it("should quote substituted arguments containing spaces", () => {
+      const resolved = resolveCommandAndArgs("/pre-cmd $2", "foo \"bar baz\"");
+      expect(resolved).toEqual({
+        command: "/pre-cmd",
+        arguments: "\"bar baz\""
+      });
+    });
+
+    it("should return empty arguments if none specified", () => {
+      const resolved = resolveCommandAndArgs("/pre-cmd", "foo bar");
+      expect(resolved).toEqual({
+        command: "/pre-cmd",
+        arguments: ""
+      });
+    });
+  });
+
   describe("command.execute.before hook", () => {
     it("should execute fine when no configs exist", async () => {
       const plugin = await CommandHooksPlugin({
@@ -131,11 +187,55 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(2);
       expect(mockClient.session.command).toHaveBeenNthCalledWith(1, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-1", arguments: "args" }
+        body: { command: "/dep-cmd-1", arguments: "" }
       });
       expect(mockClient.session.command).toHaveBeenNthCalledWith(2, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-2", arguments: "args" }
+        body: { command: "/dep-cmd-2", arguments: "" }
+      });
+    });
+
+    it("should execute JSON pre-commands with positional parameters (Design B)", async () => {
+      const config = {
+        pre: ["/dep-cmd-1 $2 $3", "/dep-cmd-2 $1", "/dep-cmd-3 $args"],
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logFilePath: "logs/commandHooks.log",
+        logLevel: "debug"
+      });
+
+      await plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-123",
+        arguments: "foo \"bar baz\" qux"
+      }, { parts: [] });
+
+      expect(mockClient.session.command).toHaveBeenCalledTimes(3);
+      expect(mockClient.session.command).toHaveBeenNthCalledWith(1, {
+        path: { id: "session-123" },
+        body: { command: "/dep-cmd-1", arguments: "\"bar baz\" qux" }
+      });
+      expect(mockClient.session.command).toHaveBeenNthCalledWith(2, {
+        path: { id: "session-123" },
+        body: { command: "/dep-cmd-2", arguments: "foo" }
+      });
+      expect(mockClient.session.command).toHaveBeenNthCalledWith(3, {
+        path: { id: "session-123" },
+        body: { command: "/dep-cmd-3", arguments: "foo \"bar baz\" qux" }
       });
     });
 
@@ -360,7 +460,48 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(1);
       expect(mockClient.session.command).toHaveBeenCalledWith({
         path: { id: "session-123" },
-        body: { command: "/dep-post-1", arguments: "args" }
+        body: { command: "/dep-post-1", arguments: "" }
+      });
+    });
+
+    it("should run JSON post-commands with positional parameters", async () => {
+      const config = {
+        post: ["/dep-post-1 $2"]
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logFilePath: "logs/commandHooks.log",
+        logLevel: "debug"
+      });
+
+      await plugin.event!({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "test-cmd",
+            sessionID: "session-123",
+            text: "val1 val2"
+          }
+        }
+      } as any);
+
+      expect(mockClient.session.command).toHaveBeenCalledTimes(1);
+      expect(mockClient.session.command).toHaveBeenCalledWith({
+        path: { id: "session-123" },
+        body: { command: "/dep-post-1", arguments: "val2" }
       });
     });
   });

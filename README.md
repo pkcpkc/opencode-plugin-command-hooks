@@ -101,29 +101,39 @@ To run multiple dependent commands before and after executing `/wiki-sync`, crea
 {
   "pre": [
     "/wiki-lint",
-    "/wiki-report"
+    "/wiki-report $2 $3"
   ],
   "post": [
-    "/wiki-clean"
+    "/wiki-clean $args"
   ]
 }
 ```
 
-*When `/wiki-sync` is executed, the plugin will first call `/wiki-lint` and `/wiki-report` using `client.session.command`, and call `/wiki-clean` after it finishes.*
+#### Parameter Forwarding & Substitution:
+You can pass parent arguments to chained commands using placeholders:
+- **`$1`, `$2`, `$3`, ..., `$N`**: Evaluates to the N-th positional parameter from the parent command. Arguments containing spaces are automatically quoted and escaped to preserve them cleanly in the child command.
+- **`$args` / `$*` / `$@`**: Passes the entire parent arguments string literally.
+- **No Placeholders**: If no placeholders are specified (e.g. `"/wiki-lint"`), the command will receive no arguments from the parent.
+
+*In the example above, if you run `/wiki-sync foo "bar baz" qux`, the plugin will call `/wiki-lint` with no arguments, `/wiki-report` with `"bar baz" qux`, and `/wiki-clean` with `foo "bar baz" qux`.*
 
 ### 2. Pre-execution Shell Script (`.pre.sh`)
 
-To run custom checks (like verifying network connection or repository state) before executing a command, create a `.opencode/commands/wiki-sync.pre.sh` file:
+To run custom checks (like verifying network connection or repository state) before executing a command, create a `.opencode/commands/wiki-sync.pre.sh` file. The parent command's arguments are parsed and forwarded to your script as separate command line arguments, allowing you to use standard positional parameter syntax (`$1`, `$2`, `$3`, etc.):
 
 ```bash
 #!/bin/bash
-echo "Verifying local Obsidian vaults..."
+# If parent runs `/wiki-sync foo "bar baz"`:
+# $1 = "foo"
+# $2 = "bar baz"
+
+echo "Verifying vault: $2"
 # Exit with non-zero code to block the main command execution
-if [ ! -d "./Vaults" ]; then
-  echo "Error: Vaults directory does not exist!" >&2
+if [ ! -d "./Vaults/$2" ]; then
+  echo "Error: Vault $2 does not exist!" >&2
   exit 1
 fi
-echo "Vaults directory verified successfully."
+echo "Vault verified successfully."
 exit 0
 ```
 
@@ -133,7 +143,8 @@ To perform post-execution notifications or cleanups, create `.opencode/commands/
 
 ```bash
 #!/bin/bash
-echo "Wiki sync completed at $(date)"
+# Positions parameters ($1, $2, etc.) are passed automatically here as well
+echo "Wiki sync for vault $2 completed at $(date)"
 # Perfect for running notifications, webhooks, or generating reports
 ```
 
