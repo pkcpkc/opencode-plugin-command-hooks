@@ -1,0 +1,18 @@
+# Dependency directories
+node_modules/
+
+# Build artifacts
+dist/
+
+# Test temporary directories
+temp-test-dir/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS metadata files
+.DS_Store
+
+# OpenCode local files
+.opencode/

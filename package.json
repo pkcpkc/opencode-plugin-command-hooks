@@ -1,0 +1,31 @@
+{
+  "name": "opencode-plugin-command-hooks",
+  "version": "1.0.0",
+  "description": "Automatically executes pre/post scripts and commands for OpenCode commands.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.14.39"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.39",
+    "@types/node": "^20.11.24",
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.7"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "command-hooks",
+    "workflow"
+  ],
+  "author": "",
+  "license": "MIT"
+}
