@@ -1,6 +1,6 @@
 {
-  "name": "opencode-plugin-command-hooks",
-  "version": "1.0.0",
+  "name": "@pkcpkc/opencode-plugin-command-hooks",
+  "version": "0.1.0",
   "description": "Automatically executes pre/post scripts and commands for OpenCode commands.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,6 +26,6 @@
     "command-hooks",
     "workflow"
   ],
-  "author": "",
+  "author": "Paul Hackenberger",
   "license": "MIT"
 }

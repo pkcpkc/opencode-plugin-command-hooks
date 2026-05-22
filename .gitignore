@@ -16,3 +16,6 @@ npm-debug.log*
 
 # OpenCode local files
 .opencode/
+
+# npm
+.npmrc

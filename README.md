@@ -52,6 +52,20 @@ Or copy the folder directly to your local plugins directory.
 
 ## Setup & Configuration
 
+### Option 1: Natively Registered Plugin
+
+Create an `opencode.json` configuration file in your project root containing:
+
+```json
+{
+  "plugin": [
+    "@pkcpkc/opencode-plugin-command-hooks"
+  ]
+}
+```
+
+### Option 2: Programmatic Registration
+
 Import and register the plugin in your `.opencode` plugins registration file:
 
 ```typescript
