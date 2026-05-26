@@ -142,13 +142,11 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
     const output = `${result.stdout.trim()}\n${result.stderr.trim()}`.trim();
     if (!output) return;
 
-    const markdown = `\`\`\`text\n${output}\n\`\`\``;
-
     try {
       await client.session.prompt({
         path: { id: sessionID },
         body: {
-          parts: [{ type: "text", text: markdown }],
+          parts: [{ type: "text", text: output }],
           noReply: true
         }
       });
