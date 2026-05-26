@@ -119,7 +119,7 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
   let lastCommandName: string | null = null;
 
   const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
-  const CURRENT_LOG_LEVEL = options.logLevel || "error";
+  const CURRENT_LOG_LEVEL = options.logLevel || "info";
 
   const log = (
     message: string,
