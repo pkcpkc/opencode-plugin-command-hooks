@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode-ai/plugin";
-import { existsSync, appendFileSync, promises as fs } from "fs";
+import { existsSync, promises as fs } from "fs";
 import { join } from "path";
 
 export function parseArguments(argsStr: string): string[] {
@@ -102,24 +102,16 @@ export interface CommandHooksOptions {
    * Defaults to "error"
    */
   logLevel?: "debug" | "info" | "warn" | "error";
-  /**
-   * Path to the log file.
-   * Defaults to ".opencode/plugins/commandHooks.log"
-   */
-  logFilePath?: string;
 }
 
 export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, options: CommandHooksOptions = {}) => {
   const commandsDirectory = options.commandsDirectory || ".opencode/commands";
-  const logFilePath = options.logFilePath || ".opencode/plugins/commandHooks.log";
-  
   const commandsDir = join(directory, commandsDirectory);
-  const logFile = join(directory, logFilePath);
   
   let lastCommandName: string | null = null;
 
   const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
-  const CURRENT_LOG_LEVEL = options.logLevel || "info";
+  const CURRENT_LOG_LEVEL = options.logLevel || "error";
 
   const log = (
     message: string,
@@ -127,12 +119,6 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
     extra?: any,
   ) => {
     if (LOG_LEVELS[level] < LOG_LEVELS[CURRENT_LOG_LEVEL]) return;
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}][${level.toUpperCase()}] ${message} ${extra ? JSON.stringify(extra) : ""}\n`;
-    try {
-      // Ensure parents exist and write
-      appendFileSync(logFile, logEntry);
-    } catch (e) {}
     client.app
       .log({
         body: { service: "command-hooks", level, message, extra },
@@ -140,42 +126,29 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
       .catch(() => {});
   };
 
-  const showToast = (message: string, variant: "info" | "success" | "warning" | "error" = "info", duration = 3000) => {
-    const variantLevel = variant === "success" ? "info" : variant === "warning" ? "warn" : variant;
-    if (LOG_LEVELS[variantLevel] < LOG_LEVELS[CURRENT_LOG_LEVEL]) return;
+  log(`Initializing plugin. CURRENT_LOG_LEVEL = ${CURRENT_LOG_LEVEL}, commandsDir = ${commandsDir}`, "info");
 
-    client.tui.showToast({
-      body: { message, variant, duration }
-    }).catch(() => {});
+  const showToast = (message: string, variant: "info" | "success" | "warning" | "error" = "info", duration = 3000) => {
+    if (client && client.tui && typeof client.tui.showToast === "function") {
+      client.tui.showToast({
+        body: { message, variant, duration }
+      }).catch((e: any) => {
+        log(`Failed to show TUI toast: ${e.message}`, "error");
+      });
+    }
   };
 
   const logToSession = async (sessionID: string, title: string, result: { stdout: string, stderr: string, exitCode: number }) => {
-    const isSuccess = result.exitCode === 0;
-    const divider = "----------------------------------------";
+    const output = `${result.stdout.trim()}\n${result.stderr.trim()}`.trim();
+    if (!output) return;
 
-    let text = `${divider}\n`;
-    text += `${title}\n`;
-    text += `${divider}\n\n`;
-
-    if (result.stdout.trim() || result.stderr.trim()) {
-      if (result.stdout.trim()) text += `${result.stdout.trim()}\n`;
-      if (result.stderr.trim()) text += `${result.stderr.trim()}\n`;
-    } else {
-      text += `(No output)\n`;
-    }
-
-    text += `\n${divider}\n`;
-    if (isSuccess) {
-      text += `[OK] Success`;
-    } else {
-      text += `[FAIL] Exit code: ${result.exitCode}`;
-    }
+    const markdown = `\`\`\`text\n${output}\n\`\`\``;
 
     try {
       await client.session.prompt({
         path: { id: sessionID },
         body: {
-          parts: [{ type: "text", text }],
+          parts: [{ type: "text", text: markdown }],
           noReply: true
         }
       });
@@ -262,7 +235,7 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
           stderr,
         });
 
-        if (sessionID && (result.exitCode !== 0 || LOG_LEVELS["info"] >= LOG_LEVELS[CURRENT_LOG_LEVEL])) {
+        if (sessionID) {
           await logToSession(sessionID, `Pre-script: ${normalized}`, {
             stdout,
             stderr,
@@ -307,7 +280,7 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
           stderr,
         });
 
-        if (sessionID && (result.exitCode !== 0 || LOG_LEVELS["info"] >= LOG_LEVELS[CURRENT_LOG_LEVEL])) {
+        if (sessionID) {
           await logToSession(sessionID, `Post-script: ${normalized}`, {
             stdout,
             stderr,

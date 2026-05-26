@@ -51,7 +51,7 @@ describe("Command Hooks Plugin", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("should initialize and log to file", async () => {
+  it("should initialize and call logging API", async () => {
     const plugin = await CommandHooksPlugin({
       $: mockShell as any,
       client: mockClient as any,
@@ -62,14 +62,17 @@ describe("Command Hooks Plugin", () => {
       serverUrl: new URL("http://localhost")
     }, {
       commandsDirectory: "commands",
-      logFilePath: "logs/commandHooks.log",
       logLevel: "debug"
     });
 
     expect(plugin.name).toBe("Command Hooks");
-    expect(existsSync(join(tempDir, "logs/commandHooks.log"))).toBe(true);
-    const logContent = await fs.readFile(join(tempDir, "logs/commandHooks.log"), "utf8");
-    expect(logContent).toContain("Plugin initialized - Tracking commands");
+    expect(mockClient.app.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          message: expect.stringContaining("Initializing plugin")
+        })
+      })
+    );
   });
 
   describe("Utility: parseArguments", () => {
@@ -140,7 +143,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -174,7 +176,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -214,7 +215,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -260,7 +260,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -288,7 +287,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -301,8 +299,13 @@ describe("Command Hooks Plugin", () => {
         arguments: "args"
       }, { parts: [] });
 
-      const logContent = await fs.readFile(join(tempDir, "logs/commandHooks.log"), "utf8");
-      expect(logContent).toContain("Pre-script finished");
+      expect(mockClient.app.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            message: "Pre-script finished"
+          })
+        })
+      );
     });
 
     it("should abort and throw when pre shell script fails", async () => {
@@ -321,7 +324,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -360,7 +362,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -378,8 +379,13 @@ describe("Command Hooks Plugin", () => {
         }
       } as any);
 
-      const logContent = await fs.readFile(join(tempDir, "logs/commandHooks.log"), "utf8");
-      expect(logContent).toContain("Post-script finished");
+      expect(mockClient.app.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            message: "Post-script finished"
+          })
+        })
+      );
     });
 
     it("should handle post-script failure without throwing", async () => {
@@ -398,7 +404,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -442,7 +447,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
@@ -483,7 +487,6 @@ describe("Command Hooks Plugin", () => {
         serverUrl: new URL("http://localhost")
       }, {
         commandsDirectory: "commands",
-        logFilePath: "logs/commandHooks.log",
         logLevel: "debug"
       });
 
