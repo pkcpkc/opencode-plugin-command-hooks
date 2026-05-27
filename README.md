@@ -180,3 +180,5 @@ If you are modifying this plugin:
    ```
 
 This generates the bundled output inside `dist/`.
+
+`npm publish --access public`

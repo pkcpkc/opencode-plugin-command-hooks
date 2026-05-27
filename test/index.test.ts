@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "path";
 import { promises as fs, existsSync } from "fs";
-import { CommandHooksPlugin, parseArguments, resolveCommandAndArgs } from "../src/index.js";
+import { CommandHooksPlugin } from "../src/index.js";
+import { parseArguments, resolveCommandAndArgs } from "../src/utils/args.js";
 
 const tempDir = join(process.cwd(), "temp-test-dir");
 
@@ -38,6 +39,8 @@ describe("Command Hooks Plugin", () => {
     }
   };
 
+  let activePlugin: any = null;
+
   beforeEach(async () => {
     await fs.mkdir(join(tempDir, "commands"), { recursive: true });
     await fs.mkdir(join(tempDir, "logs"), { recursive: true });
@@ -45,6 +48,26 @@ describe("Command Hooks Plugin", () => {
     mockShellExitCode = 0;
     mockShellStdout = "success output";
     mockShellStderr = "";
+    activePlugin = null;
+
+    mockClient.session.command.mockImplementation(async (payload: any) => {
+      if (activePlugin) {
+        process.nextTick(() => {
+          activePlugin.event!({
+            event: {
+              type: "command.executed",
+              properties: {
+                name: payload.body.command,
+                sessionID: payload.path.id,
+                text: payload.body.arguments,
+                exitCode: 0
+              }
+            }
+          } as any);
+        });
+      }
+      return {};
+    });
   });
 
   afterEach(async () => {
@@ -129,6 +152,22 @@ describe("Command Hooks Plugin", () => {
         arguments: ""
       });
     });
+
+    it("should resolve missing positional placeholders to empty string", () => {
+      const resolved = resolveCommandAndArgs("/pre-cmd $9", "foo bar");
+      expect(resolved).toEqual({
+        command: "/pre-cmd",
+        arguments: ""
+      });
+    });
+
+    it("should resolve duplicate positional placeholders correctly", () => {
+      const resolved = resolveCommandAndArgs("/pre-cmd $1 $1 $2", "foo bar");
+      expect(resolved).toEqual({
+        command: "/pre-cmd",
+        arguments: "foo foo bar"
+      });
+    });
   });
 
   describe("command.execute.before hook", () => {
@@ -178,6 +217,7 @@ describe("Command Hooks Plugin", () => {
         commandsDirectory: "commands",
         logLevel: "debug"
       });
+      activePlugin = plugin;
 
       await plugin["command.execute.before"]!({
         command: "test-cmd",
@@ -217,6 +257,7 @@ describe("Command Hooks Plugin", () => {
         commandsDirectory: "commands",
         logLevel: "debug"
       });
+      activePlugin = plugin;
 
       await plugin["command.execute.before"]!({
         command: "test-cmd",
@@ -343,6 +384,77 @@ describe("Command Hooks Plugin", () => {
       expect(promptArg.path.id).toBe("session-123");
       expect(promptArg.body.parts[0].text).toContain("Permission denied");
     });
+
+    it("should clean up and reject when client.session.command throws an error", async () => {
+      const config = {
+        pre: ["/dep-cmd-throw"]
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      mockClient.session.command.mockRejectedValueOnce(new Error("Network Error"));
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      await expect(plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] })).rejects.toThrow("Network Error");
+    });
+
+    it("should handle malformed JSON configuration gracefully and skip it", async () => {
+      // Write malformed JSON
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        "{ invalid json {"
+      );
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      // Executing before hook should succeed without running any pre-commands
+      await expect(plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] })).resolves.not.toThrow();
+
+      expect(mockClient.session.command).not.toHaveBeenCalled();
+      expect(mockClient.app.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            level: "error",
+            message: expect.stringContaining("Failed to parse chain config")
+          })
+        })
+      );
+    });
   });
 
   describe("event hook (command.executed)", () => {
@@ -449,6 +561,7 @@ describe("Command Hooks Plugin", () => {
         commandsDirectory: "commands",
         logLevel: "debug"
       });
+      activePlugin = plugin;
 
       await plugin.event!({
         event: {
@@ -489,6 +602,7 @@ describe("Command Hooks Plugin", () => {
         commandsDirectory: "commands",
         logLevel: "debug"
       });
+      activePlugin = plugin;
 
       await plugin.event!({
         event: {
@@ -506,6 +620,216 @@ describe("Command Hooks Plugin", () => {
         path: { id: "session-123" },
         body: { command: "/dep-post-1", arguments: "val2" }
       });
+    });
+
+    it("should execute pre-commands strictly sequentially", async () => {
+      const config = {
+        pre: ["/first-cmd", "/second-cmd"]
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      const executionOrder: string[] = [];
+
+      mockClient.session.command.mockImplementation(async (payload: any) => {
+        const cmdName = payload.body.command;
+        executionOrder.push(`start:${cmdName}`);
+        
+        // Simulate completion after a slight delay
+        setTimeout(() => {
+          executionOrder.push(`end:${cmdName}`);
+          activePlugin.event!({
+            event: {
+              type: "command.executed",
+              properties: {
+                name: cmdName,
+                sessionID: payload.path.id,
+                text: payload.body.arguments,
+                exitCode: 0
+              }
+            }
+          } as any);
+        }, 10);
+        return {};
+      });
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      await plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      expect(executionOrder).toEqual([
+        "start:/first-cmd",
+        "end:/first-cmd",
+        "start:/second-cmd",
+        "end:/second-cmd"
+      ]);
+    });
+
+    it("should support concurrent/multi-instance FIFO queueing for identical commands", async () => {
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      // Create pre-commands configuration to trigger identical commands
+      const config = {
+        pre: ["/wiki-lint", "/wiki-lint"]
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      // Intercept the execution and let the plugin start both.
+      // Since it's sequential, the second one will only start after the first one is resolved.
+      mockClient.session.command.mockImplementation(async (payload: any) => {
+        return {};
+      });
+
+      // We will trigger command.execute.before, which awaits all pre-commands.
+      // To simulate FIFO resolution without hanging, we can trigger the events in process.nextTick or setTimeout
+      setTimeout(() => {
+        // Event for first execution
+        plugin.event!({
+          event: {
+            type: "command.executed",
+            properties: {
+              name: "wiki-lint",
+              sessionID: "session-123",
+              exitCode: 0
+            }
+          }
+        } as any);
+
+        // Event for second execution
+        setTimeout(() => {
+          plugin.event!({
+            event: {
+              type: "command.executed",
+              properties: {
+                name: "wiki-lint",
+                sessionID: "session-123",
+                exitCode: 0
+              }
+            }
+          } as any);
+        }, 10);
+      }, 10);
+
+      await plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      expect(mockClient.session.command).toHaveBeenCalledTimes(2);
+    });
+
+    it("should isolate separate concurrent commands and not interfere", async () => {
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      // Define pre-configs for two different commands
+      await fs.writeFile(
+        join(tempDir, "commands/cmd-a.commands.json"),
+        JSON.stringify({ pre: ["/sub-a"] })
+      );
+      await fs.writeFile(
+        join(tempDir, "commands/cmd-b.commands.json"),
+        JSON.stringify({ pre: ["/sub-b"] })
+      );
+
+      const running: string[] = [];
+
+      mockClient.session.command.mockImplementation(async (payload: any) => {
+        const cmdName = payload.body.command;
+        running.push(cmdName);
+        return {};
+      });
+
+      // Trigger pre-commands for cmd-a and cmd-b
+      const p1 = plugin["command.execute.before"]!({
+        command: "cmd-a",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      const p2 = plugin["command.execute.before"]!({
+        command: "cmd-b",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      // Simulate event execution completes for sub-b first, then sub-a after a small delay to let configs load
+      setTimeout(() => {
+        plugin.event!({
+          event: {
+            type: "command.executed",
+            properties: {
+              name: "sub-b",
+              sessionID: "session-123",
+              exitCode: 0
+            }
+          }
+        } as any);
+
+        setTimeout(() => {
+          plugin.event!({
+            event: {
+              type: "command.executed",
+              properties: {
+                name: "sub-a",
+                sessionID: "session-123",
+                exitCode: 0
+              }
+            }
+          } as any);
+        }, 10);
+      }, 10);
+
+      await expect(p1).resolves.not.toThrow();
+      await expect(p2).resolves.not.toThrow();
+
+      expect(running).toContain("/sub-a");
+      expect(running).toContain("/sub-b");
     });
   });
 });
