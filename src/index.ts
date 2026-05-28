@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode-ai/plugin";
-import { join } from "path";
+import { join, dirname } from "path";
 import { resolveCommandAndArgs } from "./utils/args.js";
 import { loadChainConfig } from "./utils/config.js";
 import { runScript, PluginContext } from "./utils/scripts.js";
@@ -18,9 +18,9 @@ export interface CommandHooksOptions {
   logLevel?: "debug" | "info" | "warn" | "error";
 }
 
-export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, options: CommandHooksOptions = {}) => {
+export const CommandHooksPlugin: Plugin = async ({ $, client, directory, worktree }, options: CommandHooksOptions = {}) => {
   const commandsDirectory = options.commandsDirectory || ".opencode/commands";
-  const commandsDir = join(directory, commandsDirectory);
+  const commandsDir = join(worktree || directory, commandsDirectory);
   
   const pendingCommands = new Map<string, { resolve: () => void; reject: (err: Error) => void }[]>();
 
@@ -61,23 +61,25 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
 
   log(`Initializing plugin. CURRENT_LOG_LEVEL = ${CURRENT_LOG_LEVEL}, commandsDir = ${commandsDir}`, "info");
 
-  const executeCommandAndWait = async (sessionID: string, command: string, argumentsStr: string) => {
+  const executeCommandAndWait = async (sessionID: string, command: string, argumentsStr: string, directory?: string) => {
     return new Promise<void>(async (resolve, reject) => {
       const normCmd = command.startsWith("/") ? command.slice(1) : command;
+      const key = sessionID ? `${sessionID}:${normCmd}` : normCmd;
 
-      if (!pendingCommands.has(normCmd)) {
-        pendingCommands.set(normCmd, []);
+      if (!pendingCommands.has(key)) {
+        pendingCommands.set(key, []);
       }
       
-      pendingCommands.get(normCmd)!.push({ resolve, reject });
+      pendingCommands.get(key)!.push({ resolve, reject });
 
       try {
         await client.session.command({
           path: { id: sessionID },
-          body: { command, arguments: argumentsStr }
+          body: { command, arguments: argumentsStr, args: argumentsStr } as any,
+          query: directory ? { directory } : undefined
         });
       } catch (err: any) {
-        const resolvers = pendingCommands.get(normCmd) || [];
+        const resolvers = pendingCommands.get(key) || [];
         const index = resolvers.findIndex(r => r.resolve === resolve);
         if (index !== -1) resolvers.splice(index, 1);
         reject(err);
@@ -94,7 +96,9 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
         showToast(`Running pre-command: ${preCmd}...`, "info", 5000);
         try {
           const resolved = resolveCommandAndArgs(preCmd, args);
-          await executeCommandAndWait(sessionID, resolved.command, resolved.arguments);
+          const normPreCmd = resolved.command.startsWith("/") ? resolved.command.slice(1) : resolved.command;
+          const cmdWorkpath = join(commandsDir, dirname(normPreCmd));
+          await executeCommandAndWait(sessionID, resolved.command, resolved.arguments, cmdWorkpath);
         } catch (err: any) {
           log(`[Chain] Pre-command ${preCmd} failed`, "error", { error: err.message });
           showToast(`Pre-command ${preCmd} failed`, "error", 5000);
@@ -113,7 +117,9 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
         showToast(`Running post-command: ${postCmd}...`, "info", 5000);
         try {
           const resolved = resolveCommandAndArgs(postCmd, args);
-          await executeCommandAndWait(sessionID, resolved.command, resolved.arguments);
+          const normPostCmd = resolved.command.startsWith("/") ? resolved.command.slice(1) : resolved.command;
+          const cmdWorkpath = join(commandsDir, dirname(normPostCmd));
+          await executeCommandAndWait(sessionID, resolved.command, resolved.arguments, cmdWorkpath);
         } catch (err: any) {
           log(`[Chain] Post-command ${postCmd} failed`, "error", { error: err.message });
           showToast(`Post-command ${postCmd} failed`, "error", 5000);
@@ -128,7 +134,7 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
     name: "Command Hooks",
     description: "Automatically executes pre/post scripts and commands for OpenCode commands.",
     "command.execute.before": async (input) => {
-      const args = input.arguments || "";
+      const args = input.arguments || (input as any).args || (input as any).text || "";
       log(`Command execution started: ${input.command}`, "debug");
       
       // 1. JSON check and pre-commands execution
@@ -145,14 +151,15 @@ export const CommandHooksPlugin: Plugin = async ({ $, client, directory }, optio
 
         const cmdName = rawCmdName.startsWith("/") ? rawCmdName.slice(1) : rawCmdName;
         const sessionID = props.sessionID;
-        const args = props.text || props.arguments || "";
+        const args = props.text || props.arguments || props.args || "";
 
         // 1. If this was a chained command, resolve its pending execution promise
-        if (pendingCommands.has(cmdName)) {
-          const resolvers = pendingCommands.get(cmdName);
+        const key = sessionID ? `${sessionID}:${cmdName}` : cmdName;
+        if (pendingCommands.has(key)) {
+          const resolvers = pendingCommands.get(key);
           const resolver = resolvers?.shift();
           if (resolvers && resolvers.length === 0) {
-            pendingCommands.delete(cmdName);
+            pendingCommands.delete(key);
           }
           if (resolver) {
             const isFailure = props.exitCode !== undefined && props.exitCode !== 0;

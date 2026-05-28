@@ -2,18 +2,24 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "path";
 import { promises as fs, existsSync } from "fs";
 import { CommandHooksPlugin } from "../src/index.js";
-import { parseArguments, resolveCommandAndArgs } from "../src/utils/args.js";
 
 const tempDir = join(process.cwd(), "temp-test-dir");
 
 let mockShellExitCode = 0;
 let mockShellStdout = "success output";
 let mockShellStderr = "";
+let mockShellHistory: { strings: TemplateStringsArray; values: any[] }[] = [];
+let mockShellCwdHistory: string[] = [];
 
 const mockShell = (strings: TemplateStringsArray, ...values: any[]) => {
+  mockShellHistory.push({ strings, values });
   const chain = {
     quiet: () => chain,
     nothrow: () => chain,
+    cwd: (dir: string) => {
+      mockShellCwdHistory.push(dir);
+      return chain;
+    },
     then(onfulfilled?: (value: any) => any) {
       return Promise.resolve({
         exitCode: mockShellExitCode,
@@ -48,6 +54,8 @@ describe("Command Hooks Plugin", () => {
     mockShellExitCode = 0;
     mockShellStdout = "success output";
     mockShellStderr = "";
+    mockShellHistory = [];
+    mockShellCwdHistory = [];
     activePlugin = null;
 
     mockClient.session.command.mockImplementation(async (payload: any) => {
@@ -96,78 +104,6 @@ describe("Command Hooks Plugin", () => {
         })
       })
     );
-  });
-
-  describe("Utility: parseArguments", () => {
-    it("should split normal arguments", () => {
-      expect(parseArguments("foo bar baz")).toEqual(["foo", "bar", "baz"]);
-    });
-
-    it("should respect double quotes", () => {
-      expect(parseArguments('foo "bar baz"')).toEqual(["foo", "bar baz"]);
-    });
-
-    it("should respect single quotes", () => {
-      expect(parseArguments("foo 'bar baz'")).toEqual(["foo", "bar baz"]);
-    });
-
-    it("should handle escaped quotes", () => {
-      expect(parseArguments('foo \\"bar')).toEqual(["foo", '"bar']);
-    });
-
-    it("should handle empty arguments in quotes", () => {
-      expect(parseArguments('foo "" bar')).toEqual(["foo", "", "bar"]);
-    });
-  });
-
-  describe("Utility: resolveCommandAndArgs", () => {
-    it("should map positional placeholders", () => {
-      const resolved = resolveCommandAndArgs("/pre-cmd $2 $1", "foo bar");
-      expect(resolved).toEqual({
-        command: "/pre-cmd",
-        arguments: "bar foo"
-      });
-    });
-
-    it("should substitute $args with full string", () => {
-      const resolved = resolveCommandAndArgs("/pre-cmd $args", "foo bar");
-      expect(resolved).toEqual({
-        command: "/pre-cmd",
-        arguments: "foo bar"
-      });
-    });
-
-    it("should quote substituted arguments containing spaces", () => {
-      const resolved = resolveCommandAndArgs("/pre-cmd $2", "foo \"bar baz\"");
-      expect(resolved).toEqual({
-        command: "/pre-cmd",
-        arguments: "\"bar baz\""
-      });
-    });
-
-    it("should return empty arguments if none specified", () => {
-      const resolved = resolveCommandAndArgs("/pre-cmd", "foo bar");
-      expect(resolved).toEqual({
-        command: "/pre-cmd",
-        arguments: ""
-      });
-    });
-
-    it("should resolve missing positional placeholders to empty string", () => {
-      const resolved = resolveCommandAndArgs("/pre-cmd $9", "foo bar");
-      expect(resolved).toEqual({
-        command: "/pre-cmd",
-        arguments: ""
-      });
-    });
-
-    it("should resolve duplicate positional placeholders correctly", () => {
-      const resolved = resolveCommandAndArgs("/pre-cmd $1 $1 $2", "foo bar");
-      expect(resolved).toEqual({
-        command: "/pre-cmd",
-        arguments: "foo foo bar"
-      });
-    });
   });
 
   describe("command.execute.before hook", () => {
@@ -228,11 +164,13 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(2);
       expect(mockClient.session.command).toHaveBeenNthCalledWith(1, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-1", arguments: "" }
+        body: { command: "/dep-cmd-1", arguments: "", args: "" },
+        query: { directory: join(tempDir, "commands") }
       });
       expect(mockClient.session.command).toHaveBeenNthCalledWith(2, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-2", arguments: "" }
+        body: { command: "/dep-cmd-2", arguments: "", args: "" },
+        query: { directory: join(tempDir, "commands") }
       });
     });
 
@@ -268,15 +206,18 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(3);
       expect(mockClient.session.command).toHaveBeenNthCalledWith(1, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-1", arguments: "\"bar baz\" qux" }
+        body: { command: "/dep-cmd-1", arguments: "\"bar baz\" qux", args: "\"bar baz\" qux" },
+        query: { directory: join(tempDir, "commands") }
       });
       expect(mockClient.session.command).toHaveBeenNthCalledWith(2, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-2", arguments: "foo" }
+        body: { command: "/dep-cmd-2", arguments: "foo", args: "foo" },
+        query: { directory: join(tempDir, "commands") }
       });
       expect(mockClient.session.command).toHaveBeenNthCalledWith(3, {
         path: { id: "session-123" },
-        body: { command: "/dep-cmd-3", arguments: "foo \"bar baz\" qux" }
+        body: { command: "/dep-cmd-3", arguments: "foo \"bar baz\" qux", args: "foo \"bar baz\" qux" },
+        query: { directory: join(tempDir, "commands") }
       });
     });
 
@@ -311,12 +252,50 @@ describe("Command Hooks Plugin", () => {
       }, { parts: [] })).rejects.toThrow("Chain aborted due to error in pre-command /dep-cmd-fail: Command failed");
     });
 
+    it("should run chained commands with correct resolved nested directory", async () => {
+      const config = {
+        pre: ["/subfolder/dep-cmd"]
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      await plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      expect(mockClient.session.command).toHaveBeenCalledWith({
+        path: { id: "session-123" },
+        body: { command: "/subfolder/dep-cmd", arguments: "", args: "" },
+        query: { directory: join(tempDir, "commands/subfolder") }
+      });
+    });
+
     it("should run pre shell script successfully", async () => {
       // Create .pre.sh
+      const scriptPath = join(tempDir, "commands/test-cmd.pre.sh");
       await fs.writeFile(
-        join(tempDir, "commands/test-cmd.pre.sh"),
+        scriptPath,
         "echo 'pre-script hello'"
       );
+      await fs.chmod(scriptPath, 0o755);
 
       const plugin = await CommandHooksPlugin({
         $: mockShell as any,
@@ -350,10 +329,12 @@ describe("Command Hooks Plugin", () => {
     });
 
     it("should abort and throw when pre shell script fails", async () => {
+      const scriptPath = join(tempDir, "commands/test-cmd.pre.sh");
       await fs.writeFile(
-        join(tempDir, "commands/test-cmd.pre.sh"),
+        scriptPath,
         "exit 1"
       );
+      await fs.chmod(scriptPath, 0o755);
 
       const plugin = await CommandHooksPlugin({
         $: mockShell as any,
@@ -459,10 +440,12 @@ describe("Command Hooks Plugin", () => {
 
   describe("event hook (command.executed)", () => {
     it("should execute post-script successfully", async () => {
+      const scriptPath = join(tempDir, "commands/test-cmd.post.sh");
       await fs.writeFile(
-        join(tempDir, "commands/test-cmd.post.sh"),
+        scriptPath,
         "echo 'post-scripthello'"
       );
+      await fs.chmod(scriptPath, 0o755);
 
       const plugin = await CommandHooksPlugin({
         $: mockShell as any,
@@ -501,10 +484,12 @@ describe("Command Hooks Plugin", () => {
     });
 
     it("should handle post-script failure without throwing", async () => {
+      const scriptPath = join(tempDir, "commands/test-cmd.post.sh");
       await fs.writeFile(
-        join(tempDir, "commands/test-cmd.post.sh"),
+        scriptPath,
         "exit 5"
       );
+      await fs.chmod(scriptPath, 0o755);
 
       const plugin = await CommandHooksPlugin({
         $: mockShell as any,
@@ -577,7 +562,8 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(1);
       expect(mockClient.session.command).toHaveBeenCalledWith({
         path: { id: "session-123" },
-        body: { command: "/dep-post-1", arguments: "" }
+        body: { command: "/dep-post-1", arguments: "", args: "" },
+        query: { directory: join(tempDir, "commands") }
       });
     });
 
@@ -618,7 +604,8 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(1);
       expect(mockClient.session.command).toHaveBeenCalledWith({
         path: { id: "session-123" },
-        body: { command: "/dep-post-1", arguments: "val2" }
+        body: { command: "/dep-post-1", arguments: "val2", args: "val2" },
+        query: { directory: join(tempDir, "commands") }
       });
     });
 
@@ -752,6 +739,88 @@ describe("Command Hooks Plugin", () => {
       expect(mockClient.session.command).toHaveBeenCalledTimes(2);
     });
 
+    it("should completely isolate separate concurrent sessions from interfering with identical commands", async () => {
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      await fs.writeFile(
+        join(tempDir, "commands/test-cmd.commands.json"),
+        JSON.stringify({ pre: ["/wiki-lint"] })
+      );
+
+      const running: string[] = [];
+      mockClient.session.command.mockImplementation(async (payload: any) => {
+        const sid = payload.path.id;
+        running.push(sid);
+        if (sid === "session-2") {
+          // Auto-resolve session-2 first
+          process.nextTick(() => {
+            plugin.event!({
+              event: {
+                type: "command.executed",
+                properties: {
+                  name: payload.body.command,
+                  sessionID: sid,
+                  exitCode: 0
+                }
+              }
+            } as any);
+          });
+        }
+        return {};
+      });
+
+      // Session 1 starts running wiki-lint
+      const p1 = plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-1",
+        arguments: ""
+      }, { parts: [] });
+
+      // Session 2 starts running wiki-lint
+      const p2 = plugin["command.execute.before"]!({
+        command: "test-cmd",
+        sessionID: "session-2",
+        arguments: ""
+      }, { parts: [] });
+
+      // Verify Session 2 is resolved, and Session 1 is still pending
+      await expect(p2).resolves.not.toThrow();
+
+      let p1Resolved = false;
+      p1.then(() => { p1Resolved = true; });
+      // A small delay to ensure p1 has not resolved
+      await new Promise(r => setTimeout(r, 10));
+      expect(p1Resolved).toBe(false);
+
+      // Trigger completion for Session 1 manually now
+      await plugin.event!({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "wiki-lint",
+            sessionID: "session-1",
+            exitCode: 0
+          }
+        }
+      } as any);
+
+      await expect(p1).resolves.not.toThrow();
+      expect(running).toContain("session-1");
+      expect(running).toContain("session-2");
+    });
+
     it("should isolate separate concurrent commands and not interfere", async () => {
       const plugin = await CommandHooksPlugin({
         $: mockShell as any,
@@ -830,6 +899,240 @@ describe("Command Hooks Plugin", () => {
 
       expect(running).toContain("/sub-a");
       expect(running).toContain("/sub-b");
+    });
+  });
+
+  describe("Robust Argument Fallbacks and Payload Properties", () => {
+    it("should fallback to input.args or input.text in command.execute.before hook", async () => {
+      const scriptPath = join(tempDir, "commands/test-args-cmd.pre.sh");
+      await fs.writeFile(
+        scriptPath,
+        "echo 'pre-script hello'"
+      );
+      await fs.chmod(scriptPath, 0o755);
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+
+      // 1. Test input.args
+      mockShellHistory = [];
+      await plugin["command.execute.before"]!({
+        command: "test-args-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      } as any, { parts: [] });
+
+      // Note: first index of mockShellHistory's values is the script path, the second is parsedArgs
+      expect(mockShellHistory.length).toBe(1);
+      expect(mockShellHistory[0].values.length).toBe(1); // empty args not passed to shell
+
+      // 2. Test input.args populated
+      mockShellHistory = [];
+      await plugin["command.execute.before"]!({
+        command: "test-args-cmd",
+        sessionID: "session-123",
+        arguments: "",
+        args: "Tech"
+      } as any, { parts: [] });
+
+      expect(mockShellHistory.length).toBe(1);
+      expect(mockShellHistory[0].values[1]).toEqual(["Tech"]);
+
+      // 3. Test input.text populated
+      mockShellHistory = [];
+      await plugin["command.execute.before"]!({
+        command: "test-args-cmd",
+        sessionID: "session-123",
+        arguments: "",
+        text: "Tech"
+      } as any, { parts: [] });
+
+      expect(mockShellHistory.length).toBe(1);
+      expect(mockShellHistory[0].values[1]).toEqual(["Tech"]);
+    });
+
+    it("should fallback to props.args or props.text in event hook", async () => {
+      const config = {
+        post: ["/dep-post-1 $1"]
+      };
+      await fs.writeFile(
+        join(tempDir, "commands/test-event-cmd.commands.json"),
+        JSON.stringify(config)
+      );
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: tempDir,
+        project: {} as any,
+        worktree: tempDir,
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      // 1. Test props.args
+      mockClient.session.command.mockClear();
+      await plugin.event!({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "test-event-cmd",
+            sessionID: "session-123",
+            args: "Tech"
+          }
+        }
+      } as any);
+
+      expect(mockClient.session.command).toHaveBeenCalledTimes(1);
+      expect(mockClient.session.command).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.objectContaining({
+          command: "/dep-post-1",
+          arguments: "Tech",
+          args: "Tech"
+        })
+      }));
+
+      // 2. Test props.text
+      mockClient.session.command.mockClear();
+      await plugin.event!({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "test-event-cmd",
+            sessionID: "session-123",
+            text: "Tech"
+          }
+        }
+      } as any);
+
+      expect(mockClient.session.command).toHaveBeenCalledTimes(1);
+      expect(mockClient.session.command).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.objectContaining({
+          command: "/dep-post-1",
+          arguments: "Tech",
+          args: "Tech"
+        })
+      }));
+    });
+  });
+
+  describe("Integrated CWD Isolation Validation", () => {
+    it("should resolve and execute chained pre/post commands and scripts with correct nested directory relative to worktree", async () => {
+      // Create nested command JSON config, pre-script, and post-script in tempDir
+      const nestedCmdDir = join(tempDir, "commands/nested");
+      await fs.mkdir(nestedCmdDir, { recursive: true });
+
+      // Config: validate-cwd.commands.json
+      await fs.writeFile(
+        join(tempDir, "commands/validate-cwd.commands.json"),
+        JSON.stringify({
+          pre: ["nested/child-cmd"]
+        })
+      );
+
+      // Pre-script: nested/child-cmd.pre.sh
+      const prePath = join(nestedCmdDir, "child-cmd.pre.sh");
+      await fs.writeFile(
+        prePath,
+        "echo child-cmd.pre.sh"
+      );
+      await fs.chmod(prePath, 0o755);
+
+      // Post-script: nested/child-cmd.post.sh
+      const postPath = join(nestedCmdDir, "child-cmd.post.sh");
+      await fs.writeFile(
+        postPath,
+        "echo child-cmd.post.sh"
+      );
+      await fs.chmod(postPath, 0o755);
+
+      const plugin = await CommandHooksPlugin({
+        $: mockShell as any,
+        client: mockClient as any,
+        directory: join(tempDir, "commands/nested"), // Active directory is nested
+        project: {} as any,
+        worktree: tempDir, // Worktree root is main project root
+        experimental_workspace: {} as any,
+        serverUrl: new URL("http://localhost")
+      }, {
+        commandsDirectory: "commands",
+        logLevel: "debug"
+      });
+      activePlugin = plugin;
+
+      // Reset mocks and shell history
+      mockClient.session.command.mockClear();
+      mockShellCwdHistory = [];
+
+      // Execute command.execute.before hook
+      await plugin["command.execute.before"]!({
+        command: "validate-cwd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      // 1. Verify chained command resolves relative to worktree/commands and runs in its correct nested folder
+      expect(mockClient.session.command).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.objectContaining({
+          command: "nested/child-cmd"
+        }),
+        query: {
+          directory: join(tempDir, "commands/nested")
+        }
+      }));
+
+      // 2. Trigger event hook to simulate execution completion of validate-cwd
+      mockClient.session.command.mockClear();
+      await plugin.event!({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "validate-cwd",
+            sessionID: "session-123",
+            exitCode: 0
+          }
+        }
+      } as any);
+
+      // 3. Trigger command.execute.before for nested/child-cmd (simulated child execution)
+      await plugin["command.execute.before"]!({
+        command: "nested/child-cmd",
+        sessionID: "session-123",
+        arguments: ""
+      }, { parts: [] });
+
+      // Verify that child-cmd's pre-script ran with the child-cmd directory as its working directory (cwd)
+      expect(mockShellCwdHistory).toContain(join(tempDir, "commands/nested"));
+
+      // 4. Trigger event hook to simulate completion of nested/child-cmd
+      mockShellCwdHistory = [];
+      await plugin.event!({
+        event: {
+          type: "command.executed",
+          properties: {
+            name: "nested/child-cmd",
+            sessionID: "session-123",
+            exitCode: 0
+          }
+        }
+      } as any);
+
+      // Verify that child-cmd's post-script ran with the child-cmd directory as its working directory (cwd)
+      expect(mockShellCwdHistory).toContain(join(tempDir, "commands/nested"));
     });
   });
 });

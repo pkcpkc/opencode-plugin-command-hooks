@@ -1,5 +1,5 @@
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync, accessSync, constants } from "fs";
+import { join, dirname } from "path";
 import { parseArguments } from "./args.js";
 
 export interface PluginContext {
@@ -44,12 +44,40 @@ export const runScript = async (
   const label = type === "pre" ? "Pre-script" : "Post-script";
 
   if (existsSync(scriptPath)) {
+    // Check if script has executable permissions
+    let isExecutable = true;
+    try {
+      accessSync(scriptPath, constants.X_OK);
+    } catch (e) {
+      isExecutable = false;
+    }
+
+    if (!isExecutable) {
+      const errorMsg = `${label} ${normalized} is defined at ${scriptPath} but is not executable. Please run 'chmod +x ${scriptPath}' to grant execution permissions.`;
+      ctx.log(errorMsg, "error");
+      ctx.showToast(`${label} ${normalized} is not executable`, "error", 5000);
+      if (sessionID) {
+        await logToSession(ctx, sessionID, `${label}: ${normalized}`, {
+          stdout: "",
+          stderr: errorMsg,
+          exitCode: 126
+        });
+      }
+      if (type === "pre") {
+        throw new Error(errorMsg);
+      }
+      return null;
+    }
+
     ctx.log(`Running ${type}-script for ${normalized}`, "info", { script: scriptPath });
     ctx.showToast(`Running ${type}-script for ${normalized}...`, "info", 600000);
 
     try {
       const parsedArgs = parseArguments(args);
-      const result = await ctx.$`bash ${scriptPath} ${parsedArgs}`.quiet().nothrow();
+      const scriptDir = dirname(scriptPath);
+      const result = parsedArgs.length > 0
+        ? await ctx.$`bash ${scriptPath} ${parsedArgs}`.cwd(scriptDir).quiet().nothrow()
+        : await ctx.$`bash ${scriptPath}`.cwd(scriptDir).quiet().nothrow();
       const stdout = result.stdout.toString();
       const stderr = result.stderr.toString();
 

@@ -11,7 +11,8 @@ A generic, highly flexible plugin for **OpenCode** that adds powerful hooks and 
 - 🎯 **Strict Execution Order**: Guarantees a robust, predictable pipeline sequence.
 - 🛑 **Failure Propagation & Safe Abort**: If a pre-command or pre-script fails (non-zero exit code or error), the pipeline aborts immediately, stopping the main command.
 - 🔄 **Recursive Support**: Fully supports nested/recursive command invocations natively using OpenCode's command system.
-- 📝 **Detailed Logging & Session Output**: Output from pre/post shell scripts is logged to a local file, reported to OpenCode's logs, and printed back directly to the active session when a failure occurs.
+- 📝 **Detailed Logging & Session Output**: Output from pre/post shell scripts is reported to OpenCode's logs and printed back directly to the active session when a failure occurs.
+- 🔒 **Session Isolation**: Pending execution states are strictly keyed by both `sessionID` and command name, perfectly isolating concurrent executions across separate terminals or sessions and preventing resolver race conditions.
 
 ---
 
@@ -20,13 +21,13 @@ A generic, highly flexible plugin for **OpenCode** that adds powerful hooks and 
 When a command (e.g. `wiki-sync`) is invoked, the plugin executes hooks in this felsenfest sequence:
 
 ```mermaid
-graph TD
-    A[Start: Command Execute] --> B["1. JSON Pre-commands (.commands.json)"]
+flowchart TD
+    A["Start: Command Execute"] --> B["1. JSON Pre-commands (.commands.json)"]
     B --> C["2. Shell Pre-script (.pre.sh)"]
-    C --> D[3. Main Command]
+    C --> D["3. Main Command"]
     D --> E["4. Shell Post-script (.post.sh)"]
     E --> F["5. JSON Post-commands (.commands.json)"]
-    F --> G[Finish: Command Executed]
+    F --> G["Finish: Command Executed"]
 ```
 
 ### Flow Details
@@ -76,7 +77,6 @@ export default [
   CommandHooksPlugin({
     commandsDirectory: ".opencode/commands",
     logLevel: "error", // "debug" | "info" | "warn" | "error"
-    logFilePath: ".opencode/plugins/commandHooks.log"
   })
 ];
 ```
@@ -86,8 +86,7 @@ export default [
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `commandsDirectory` | `string` | `".opencode/commands"` | Directory where your scripts and command JSON chains reside. |
-| `logLevel` | `string` | `"error"` | Log verbosity level for local files and toast messages. |
-| `logFilePath` | `string` | `".opencode/plugins/commandHooks.log"` | Absolute or relative path to save execution logs. |
+| `logLevel` | `string` | `"error"` | Log verbosity level for logging and toast messages. |
 
 ---
 
@@ -100,11 +99,11 @@ To run multiple dependent commands before and after executing `/wiki-sync`, crea
 ```json
 {
   "pre": [
-    "/wiki-lint",
-    "/wiki-report $2 $3"
+    "wiki-lint",
+    "wiki-report $2 $3"
   ],
   "post": [
-    "/wiki-clean $args"
+    "wiki-clean $args"
   ]
 }
 ```
@@ -120,6 +119,12 @@ You can pass parent arguments to chained commands using placeholders:
 ### 2. Pre-execution Shell Script (`.pre.sh`)
 
 To run custom checks (like verifying network connection or repository state) before executing a command, create a `.opencode/commands/wiki-sync.pre.sh` file. The parent command's arguments are parsed and forwarded to your script as separate command line arguments, allowing you to use standard positional parameter syntax (`$1`, `$2`, `$3`, etc.):
+
+> [!IMPORTANT]
+> **Executable Permission**: Ensure that all your shell scripts (`.pre.sh` and `.post.sh`) are marked as executable. You can grant execute permissions by running:
+> ```bash
+> chmod +x .opencode/commands/*.sh
+> ```
 
 ```bash
 #!/bin/bash
@@ -182,3 +187,18 @@ If you are modifying this plugin:
 This generates the bundled output inside `dist/`.
 
 `npm publish --access public`
+
+---
+
+## Manual Verification & Demonstration
+
+To demonstrate and validate the precise execution flow, working directory isolation, and parameter processing, you can use the integrated `validate-workpath` command.
+
+This command is defined in the [.opencode/commands](file:///.opencode/commands) directory of this repository and triggers a sequence of chained commands and pre/post shell scripts (including a nested shell script in a subfolder). When executed:
+1. **Working Directory Isolation**: Each pre/post script outputs its working directory, verifying that scripts execute using the directory where the script is located (providing robust isolation relative to the worktree/commands folder).
+2. **Felsenfest Sequence & Execution**: The sequence outputs its steps, demonstrating the successful recursion, strict sequential execution, and error safety of the hooks.
+
+You can trigger the demonstration in an active OpenCode session with:
+```bash
+/validate-workpath
+```
